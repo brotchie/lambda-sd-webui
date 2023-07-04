@@ -1,0 +1,5 @@
+venv
+state.json
+__pycache__
+lambda_api_key.txt
+.swp
