@@ -175,4 +175,6 @@ class LambdaAPI:
 
     def _post(self, path: str, data: Any, default: Any = None) -> Any:
         response = requests.post(self.base_uri + path, json=data, headers=self.headers)
+        if response.status_code != 200:
+            raise LambdaAPIError(f"Failed to create instance: {response.status_code} {response.text}")
         return response.json().get("data", default)

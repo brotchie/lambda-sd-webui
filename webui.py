@@ -1,4 +1,5 @@
 from typing import Dict, Optional
+import sys
 import time
 import os
 import enum
@@ -69,6 +70,12 @@ def load_state(filename="state.json") -> WebUIState:
 def get_ssh_private_key_path() -> str:
     return os.path.join(os.path.expanduser("~"), ".ssh", "id_rsa")
 
+def get_ssh_public_key_path() -> str:
+    return get_ssh_private_key_path() + ".pub"
+
+def get_ssh_public_key() -> str:
+    with open(get_ssh_public_key_path(), "r") as f:
+        return f.read().strip()
 
 def build_connect_kwargs() -> Dict[str, str]:
     return {"key_filename": get_ssh_private_key_path()}
@@ -166,6 +173,7 @@ class StateMachine:
     installing_poll_interval_seconds: int = 5
     state: WebUIState
     ssh_username: str = "ubuntu"
+    terminal_opened: bool = False
 
     def __init__(self, state: Optional[WebUIState] = None):
         if state is None:
@@ -209,6 +217,10 @@ class StateMachine:
                 self._status_installing()
             elif self.state.status == WebUIStatus.STARTING:
                 self._status_starting()
+            elif self.state.status == WebUIStatus.RUNNING:
+                self._status_running()
+            elif self.state.status == WebUIStatus.TERMINATING:
+                self._status_terminating()
             else:
                 break
 
@@ -224,11 +236,16 @@ class StateMachine:
         chosen_offer = prompt_user_for_instance_type(self.lapi)
 
         ssh_keys = self.lapi.get_ssh_keys()
-
         if not ssh_keys:
             raise WebUIError(
                 "No SSH keys found. Please create an SSH key and try again."
             )
+
+        pub_key = get_ssh_public_key()
+        local_ssh_keys = [key for key in ssh_keys if key.public_key == pub_key]
+
+        if not local_ssh_keys:
+            raise WebUIError(f"Local SSH key {pub_key} doesn't match any LambdaLabs keys.")
 
         region_name = chosen_offer.regions_with_capacity_available[0].name
         self.info(
@@ -238,7 +255,7 @@ class StateMachine:
             name=self.instance_name,
             instance_type_name=chosen_offer.instance_type.name,
             region_name=region_name,
-            ssh_keys=ssh_keys,
+            ssh_keys=local_ssh_keys,
         )
         self.info(f"Launched LambdaLabs instance with id {instance_id}")
         self.state.current_instance = instance_id
@@ -251,6 +268,7 @@ class StateMachine:
             if details.is_active:
                 self.info(f"Instance {self.state.current_instance} is active!")
                 self._transition_status(WebUIStatus.INSTALLING)
+                time.sleep(5)
                 return
             elif details.is_terminated:
                 self.info(
@@ -266,6 +284,7 @@ class StateMachine:
 
     def _status_installing(self):
         self.webui.open_terminal()
+        self.terminal_opened = True
         if not self.webui.is_webui_installed():
             self.info("Installing WebUI.")
             self.webui.install_webui()
@@ -289,13 +308,44 @@ class StateMachine:
         self._transition_status(WebUIStatus.STARTING)
 
     def _status_starting(self):
+        if not self.terminal_opened:
+            self.webui.open_terminal()
+            self.terminal_opened = True
         self.webui.kill()
         time.sleep(5)
         self.webui.run()
+        time.sleep(5)
+        self._transition_status(WebUIStatus.RUNNING)
+
+    def _status_running(self):
+        if not self.terminal_opened:
+            self.webui.open_terminal()
+            self.terminal_opened = True
         with self.webui.forward_port():
-            self.info("Forwarding port http://localhost:7860/")
-            while True:
-                time.sleep(1)
+            try:
+                self.info("Ready! Open the WebUI at http://localhost:7860/")
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                response = input("Do you want to terminate the instance? y/n:")
+                if response.strip().lower()[0] == "y":
+                    self.lapi.terminate_instances([self.state.current_instance])
+                    self._transition_status(WebUIStatus.TERMINATING)
+                    return
+                else:
+                    print("Not terminating")
+                    sys.exit(0)
+
+    def _status_terminating(self):
+        while True:
+            details = self.lapi.get_instance_details(self.state.current_instance)
+            if details.is_active:
+                print("Still active...")
+                time.sleep(5)
+            if details.is_terminated:
+                print("Terminated")
+                self.reset_state()
+                sys.exit(0)
 
     def info(self, text) -> None:
         print(text)

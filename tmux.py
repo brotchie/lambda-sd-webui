@@ -31,19 +31,43 @@ class TmuxSession:
             hide=True,
         )
 
-    def open_terminal(self, detatch_others=True, readonly=False):
+    def open_terminal(self, detatch_others=True, readonly=True):
         """Opens a terminal on the local host.
 
         This will SSH into the destination connection and attach to
         the existing tmux session.
 
         """
+        ssh_command = self._build_ssh_command(detatch_others, readonly)
+
+        if sys.platform == "linux":
+            args = [
+                "gnome-terminal",
+                "--",
+            ] + ssh_command
+        elif sys.platform == "darwin":
+            args = [
+                "osascript",
+                "-e",
+                f"""
+                tell app "Terminal"
+                    activate
+                    do script "{' '.join(ssh_command)}"
+                end tell
+                """,
+            ]
+        else:
+            raise Exception(f"Unsupported platform: {sys.platform}")
+
+        subprocess.run(args)
+
+    def _build_ssh_command(self, detatch_others=True, readonly=False):
         destination = f"{self.conn.user}@{self.conn.host}"
         args = [
-            "gnome-terminal",
-            "--",
             "ssh",
             "-t",
+            "-o",
+            "'StrictHostKeyChecking accept-new'",
             destination,
             "tmux",
             "attach",
@@ -51,10 +75,11 @@ class TmuxSession:
             self.name,
         ]
         if readonly:
-            args.append("r")
+            args.append("-r")
         if detatch_others:
             args.append("-d")
-        subprocess.run(args)
+
+        return args
 
     def list_windows(self) -> List[str]:
         window_list = (
@@ -66,12 +91,6 @@ class TmuxSession:
 
     def select_window(self, index: int):
         self.conn.run(f"tmux select-window -t {self.name}:{index}")
-
-    def _get_os_specific_terminal(self) -> str:
-        if sys.platform == "linux":
-            return "gnome-terminal"
-        else:
-            raise Exception(f"Unsupported platform: {sys.platform}")
 
 
 class Tmux:

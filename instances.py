@@ -23,6 +23,8 @@ def prompt_user_for_instance_type(api: LambdaAPI) -> OfferedInstanceType:
 
     for offer in offers:
         description = offer.instance_type.description
+        if "A100" not in description and "H100" not in description:
+            continue
         cost = int(offer.instance_type.price_cents_per_hour)
         vcpus = offer.instance_type.specs.vcpus
         ram_gib = offer.instance_type.specs.memory_gib
